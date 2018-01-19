@@ -5,7 +5,7 @@
 # call `Block::compile-root`.
 
 require! {
-    'prelude-ls': {fold}
+    'prelude-ls': {fold, zip-with}
     './util': {name-from-path, strip-string}
     'source-map': {SourceNode, SourceMapGenerator}
 }
@@ -351,11 +351,14 @@ SourceNode::to-string = (...args) ->
         tree  = \\n + idt + @constructor.display-name
         tree += ' ' + that if @show!
         @each-child !-> tree += it.toString idt + TAB
+        if @type-ascription then tree += \\n + idt + ':: ' + @type-ascription.toString idt + TAB
         tree
 
     # JSON serialization
     stringify: (space) -> JSON.stringify this, null space
     to-JSON: -> {type: @constructor.display-name, ...this}
+
+    add-type: (@type-ascription) -> this
 
 # JSON deserialization
 exports.parse    = (json) -> exports.from-JSON JSON.parse json
@@ -782,6 +785,15 @@ class exports.Chain extends Node
             util \flip
             util \curry
         {head, tails} = this
+        if o.in-type-expr and head.value is \forall
+            type-params = tails.0.args.slice 0 -1
+            type-body = tails.0.args[*-1]
+            return sn do
+                this
+                \<
+                [p.compile o for p in type-params].join ', '
+                \>
+                type-body.compile o
         head <<< {@front, @newed}
         return head.compile o unless tails.length
         return that.compile o if @unfold-assign o
@@ -962,10 +974,10 @@ class exports.Call extends Node
     show: -> [@new] + [@method] + [\? if @soak]
 
     compile: (o) ->
-        code  =  [sn(this, (@method or ''), \() + (if @pipe then "\n#{o.indent}" else '')]
+        code  =  [sn(this, (@method or ''), if o.in-type-expr then \< else \() + (if @pipe then "\n#{o.indent}" else '')]
         for a, i in @args
             code.push (if i then ', ' else ''), a.compile o, LEVEL_LIST
-        code.push sn(this, \))
+        code.push sn(this, if o.in-type-expr then \> else \))
         sn(null, ...code)
     @make = (callee, args, opts) ->
         call = Call args
@@ -1619,12 +1631,20 @@ class exports.Assign extends Node
             op    = \:=
         op = (op.slice 1 -2) + \= if op in <[ .&.= .|.= .^.= .<<.= .>>.= .>>>.= ]>
         (right.=unparen!)rip-name left.=unwrap!
-        sign = sn(@opLoc, " ", (op.replace \: ''), " ")
+        sign = sn(@opLoc, ' ', (op.replace \: ''), " ")
         name = ((left <<< {+front})compile o, LEVEL_LIST)
         if lvar = left instanceof Var
             if op is \=
                 o.scope.declare name.to-string!, left,
                     (@const or not @defParam and o.const and \$ isnt name.to-string!.slice -1)
+                if right instanceof Fun and not right.type-ascription
+                    any-ascriptions = false
+                    type-ascription = Fun!
+                    for param in right.params
+                        type-ascription.params.push (if delete param.type-ascription then any-ascriptions = true; that else Var \any)
+                    type-ascription.body = Block (if delete right.body.lines[*-1]?type-ascription then any-ascriptions = true; that else Var \any)
+                    right <<< { type-ascription } if any-ascriptions
+                o.scope.ascribe name, that.compile o with type-o if delete right.type-ascription
             else if o.scope.checkReadOnly name.to-string!
                 left.carp "assignment to #that \"#name\"" ReferenceError
         if left instanceof Chain and right instanceof Fun
@@ -1957,6 +1977,21 @@ class exports.Fun extends Node
     rip-name: !-> @name ||= it.var-name!
 
     compile-node: (o) ->
+        if o.in-type-expr
+            n = 0
+            return sn do
+                null
+                '('
+                ["arg#{n++}: #{p.compile o}" for p in @params].join ', '
+                ') => '
+                @body.lines.0.compile o
+        if @type-ascription instanceof Chain and @type-ascription.head.value is \forall
+            forall-args = @type-ascription.tails.0.args
+            @type-ascription-generics = forall-args.slice 0 -1
+            @type-ascription = forall-args[*-1]
+        if @type-ascription instanceof Fun
+            zip-with ((p, t) -> p.add-type t), @params, @type-ascription.params
+            @body.lines[*-1]?add-type @type-ascription.body.lines.0
         pscope = o.scope
         sscope = pscope.shared or pscope
         scope  = o.scope = @body.scope =
@@ -1993,8 +2028,16 @@ class exports.Fun extends Node
             pscope.add name, \function, this
         if @statement or name and @labeled
             code.push ' ', (scope.add name, \function, this)
+        return-type = body.lines[*-1]?type-ascription
         @hushed or @ctor or @newed or body.make-return!
+        if @type-ascription-generics
+            code.push "<"
+            for that then code.push ..value, ', '
+            code.pop!
+            code.push ">"
         code.push "(", (@compile-params o, scope), ")"
+        if not (@hushed or @ctor or @newed) and return-type
+            code.push ': ', that.compile o with type-o
         code = [sn(this, ...code)]
         code.push "{"
         code.push "\n", bodyCode, "\n#tab" unless sn-empty(bodyCode = body.compile-with-declarations o)
@@ -2055,6 +2098,7 @@ class exports.Fun extends Node
                     unaries.push vr
                     vr.=it
                 v = Var delete (vr.it || vr)name || vr.var-name! || scope.temporary \arg
+                v.add-type that if vr.type-ascription
                 assigns.push Assign vr, switch
                     | df        => Binary p.op, v, p.second
                     | has-unary => fold ((x, y) -> y.it = x; y), v, unaries.reverse!
@@ -2062,7 +2106,7 @@ class exports.Fun extends Node
                 vr = v
             else if df
                 assigns.push Assign vr, p.second, \=, p.op, true
-            names.push (scope.add vr.value, \arg, p), ', '
+            names.push (scope.add vr.value, \arg, p), ...(if vr.type-ascription then [': ', that.compile o with type-o] else []), ', '
         if rest
             while splace-- then rest.unshift Arr!
             assigns.push Assign Arr(rest), Literal \arguments
@@ -2992,13 +3036,14 @@ DECLS =
 # functions. Each scope knows about the function parameters and the variables
 # declared within it, and has references to its parent/shared enclosing scopes.
 !function Scope @parent, @shared
+    return type-scope if @parent is type-scope
     @variables = {}
 Scope ::=
     READ_ONLY: const:\constant function:\function undefined:\undeclared
 
     # Adds a new variable or overrides an existing one.
     add: (name, type, node) ->
-        if node and t = @variables"#name."
+        if node and t = @variables"#name."?type
             if @READ_ONLY[t] or @READ_ONLY[type]
                 node.carp "redeclaration of #that \"#name\""
             else if t is type is \arg
@@ -3007,10 +3052,10 @@ Scope ::=
                 node.carp "accidental shadow of \"#name\""
             return name if t in <[ arg function ]>
         # Dot-suffix to bypass `Object::` members.
-        @variables"#name." = type
+        @variables"#name." = {type}
         name
 
-    get: (name) -> @variables"#name."
+    get: (name) -> @variables"#name."?type
 
     # Declares a variable unless declared already.
     declare: (name, node, constant) ->
@@ -3027,7 +3072,7 @@ Scope ::=
     # If we need to store an intermediate result, find an available name for a
     # compiler-generated variable. `var$`, `var1$`, and so on.
     temporary: (name || \ref) ->
-        until @variables"#name\$." in [\reuse void]
+        until @variables"#name\$."?type in [\reuse void]
             name = if name.length < 2 and name < \z
                 then String.fromCharCode name.charCodeAt! + 1
                 else name.replace /\d*$/ -> ++it
@@ -3039,24 +3084,28 @@ Scope ::=
     # Checks to see if a variable has already been declared.
     # Walks up the scope if `above` flag is specified.
     check: (name, above) ->
-        return type if (type = @variables"#name.") or not above
+        return type if (type = @variables"#name."?type) or not above
         @parent?check name, above
 
     # Checks if a variable can be reassigned.
     check-read-only: (name) ->
         return that if @READ_ONLY[@check name, true]
-        @variables"#name." ||= \upvar
+        @variables"#name." ||= type: \upvar
         ''
+
+    ascribe: (name, ascription) -> @variables"#name." <<< {ascription}
 
     # Concatenates the declarations in this scope.
     emit: (code, tab) ->
         vrs = []
         asn = []
         fun = []
-        for name, type of @variables
+        for name, {type, ascription}: x of @variables
             name.=slice 0 -1
             if type in <[ var const reuse ]>
-                vrs.push name, ", "
+                vrs.push name
+                vrs.push ": ", that if ascription
+                vrs.push ", "
             else if type.value
                 if ~(val = entab that, tab).to-string!.last-index-of \function( 0
                     if val instanceof SourceNode
@@ -3065,12 +3114,20 @@ Scope ::=
                         val = val.slice(8)
                     fun.push "function ", name, val, "\n#tab"
                 else
-                    asn.push name, " = ", val, ", "
+                    asn.push name
+                    asn.push ": ", that if ascription
+                    asn.push " = ", val, ", "
         declCode = vrs.concat asn
         declCode.pop!
         fun.pop!
         code = sn(this, "#{tab}var ", ...declCode, ";\n", code) if declCode.length > 0
         if fun.length > 0 then sn(this, code, "\n#tab", ...fun) else sn(this, code)
+
+type-scope = new Scope
+for fn of Scope::
+    type-scope[fn] = ->
+type-scope.add = -> it
+type-o = { +in-type-expr, scope: type-scope, indent: '' }
 
 ##### Constants
 

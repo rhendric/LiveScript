@@ -652,9 +652,12 @@ exports <<<
             return 1 if @dotcat val
             tag = 'UNARY'
         case '::'
-            @adi!
-            val = 'prototype'
-            tag = 'ID'
+            if @last.spaced
+                tag = 'ASCR'
+            else
+                @adi!
+                val = 'prototype'
+                tag = 'ID'
         case '=>'
             @unline!
             @fset 'for' false
@@ -908,6 +911,10 @@ function carp msg, lno then throw SyntaxError "#msg on line #{-~lno}"
 # Checks whether or not the previous token is {index,`call`}able.
 function able tokens, i ? tokens.length, call
     [tag] = token = tokens[i-1]
+    if tag is \ASCR and not call
+        token.0 = \ID
+        token.1 = \prototype
+        return true
     tag in <[ ID ] ? ]> or if call
         then token.callable or tag in <[ ) )CALL BIOPBP ]> and token.1
         else tag in <[ } ) )CALL STRNUM LITERAL WORDS ]>
@@ -988,6 +995,9 @@ character = if not JSON? then uxxxx else ->
     while token = tokens[++i]
         [tag, val, line, column] = token
         switch
+        case tag is 'ASCR' and not (token.spaced and (next = tokens[i + 1]) and (next.0 is \PARAM( or next.0 in CHAIN))
+            token.0 = 'ID'
+            token.1 = 'prototype'
         case tag is 'ASSIGN' and prev.1 in LS_KEYWORDS and tokens[i-2].0 isnt 'DOT'
             carp "cannot assign to reserved word '#{prev.1}'" line
         case tag is 'DOT' and prev.0 is ']' and tokens[i-2].0 is '[' and tokens[i-3].0 is 'DOT'
@@ -1105,6 +1115,7 @@ character = if not JSON? then uxxxx else ->
         case 'CATCH'          then t is 'TRY'
         case 'FINALLY'        then t in <[ TRY CATCH THEN ]>
         case 'CASE' 'DEFAULT' then t in <[ CASE THEN ]>
+        case 'ASCR'           then not t or t is '->'
     !function go [] i
         prev = tokens[i-1]
         tokens.splice if prev.0 is ',' then i-1 else i, 0, dedent <<< {prev.2, prev.3}

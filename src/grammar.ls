@@ -336,6 +336,8 @@ bnf =
         # `var`, `const`, `export`, or `import`
         o 'DECL INDENT ArgList OptComma DEDENT' -> Decl $1, $3, yylineno+1
 
+        o 'Expression ASCR Expression' -> $1 .add-type $3
+
     Exprs:
         o         'Expression' -> [$1]
         o 'Exprs , Expression' -> $1 ++ $3
@@ -461,6 +463,7 @@ operators =
     # Listed from lower precedence.
     <[ left     POST_IF      ]>
     <[ right    ASSIGN HURL  ]>
+    <[ nonassoc ASCR         ]>
     <[ right    YIELD        ]>
     <[ right    BACKPIPE     ]>
     <[ left     PIPE         ]>
