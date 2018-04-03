@@ -200,7 +200,9 @@ bnf =
     # Note that [Lexer](#lexer) rewrites some single-line forms into blocks.
     Block:
         o 'INDENT Lines DEDENT' -> $2
-        ...
+        o 'INDENT ASCR Expression DEDENT' -> Block!add-type $3
+        o 'INDENT ASCR Expression NEWLINE Lines DEDENT' -> $5 .add-type $3
+        o 'INDENT ASCR Expression INDENT Lines DEDENT DEDENT' ditto
 
     SplatChain:
         o '... Chain' -> Splat $2.unwrap!

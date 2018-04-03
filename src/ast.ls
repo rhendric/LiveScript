@@ -359,6 +359,7 @@ SourceNode::to-string = (...args) ->
     to-JSON: -> {type: @constructor.display-name, ...this}
 
     add-type: (@type-ascription) -> this
+    delete-type: -> delete @type-ascription
 
 # JSON deserialization
 exports.parse    = (json) -> exports.from-JSON JSON.parse json
@@ -520,6 +521,8 @@ class exports.Block extends Node
     # Blocks rewrite shorthand line-by-line as they're compiled to conserve
     # shorthand temp variables.
     rewrite-shorthand: VOID
+
+    delete-type: -> delete @type-ascription or @lines[*-1]?delete-type!
 
 #### Atom
 # An abstract node for simple values.
@@ -785,7 +788,7 @@ class exports.Chain extends Node
             util \flip
             util \curry
         {head, tails} = this
-        if o.in-type-expr and head.value is \forall
+        if o.in-type-expr and head.value in <[ forall ]>
             type-params = tails.0.args.slice 0 -1
             type-body = tails.0.args[*-1]
             return sn do
@@ -1637,14 +1640,7 @@ class exports.Assign extends Node
             if op is \=
                 o.scope.declare name.to-string!, left,
                     (@const or not @defParam and o.const and \$ isnt name.to-string!.slice -1)
-                if right instanceof Fun and not right.type-ascription
-                    any-ascriptions = false
-                    type-ascription = Fun!
-                    for param in right.params
-                        type-ascription.params.push (if delete param.type-ascription then any-ascriptions = true; that else Var \any)
-                    type-ascription.body = Block (if delete right.body.lines[*-1]?type-ascription then any-ascriptions = true; that else Var \any)
-                    right <<< { type-ascription } if any-ascriptions
-                o.scope.ascribe name, that.compile o with type-o if delete right.type-ascription
+                o.scope.ascribe name, that.compile o with type-o if right.delete-type!
             else if o.scope.checkReadOnly name.to-string!
                 left.carp "assignment to #that \"#name\"" ReferenceError
         if left instanceof Chain and right instanceof Fun
@@ -1985,13 +1981,14 @@ class exports.Fun extends Node
                 ["arg#{n++}: #{p.compile o}" for p in @params].join ', '
                 ') => '
                 @body.lines.0.compile o
-        if @type-ascription instanceof Chain and @type-ascription.head.value is \forall
-            forall-args = @type-ascription.tails.0.args
-            @type-ascription-generics = forall-args.slice 0 -1
-            @type-ascription = forall-args[*-1]
-        if @type-ascription instanceof Fun
-            zip-with ((p, t) -> p.add-type t), @params, @type-ascription.params
-            @body.lines[*-1]?add-type @type-ascription.body.lines.0
+        type = @delete-type!
+        if type instanceof Chain and type.head.value is \forall
+            forall-args = type.tails.0.args
+            type-ascription-generics = forall-args.slice 0 -1
+            type = forall-args[*-1]
+        if type instanceof Fun
+            zip-with ((p, t) -> p.add-type t), @params, type.params
+            return-type = type.body.lines.0
         pscope = o.scope
         sscope = pscope.shared or pscope
         scope  = o.scope = @body.scope =
@@ -2028,9 +2025,8 @@ class exports.Fun extends Node
             pscope.add name, \function, this
         if @statement or name and @labeled
             code.push ' ', (scope.add name, \function, this)
-        return-type = body.lines[*-1]?type-ascription
         @hushed or @ctor or @newed or body.make-return!
-        if @type-ascription-generics
+        if type-ascription-generics
             code.push "<"
             for that then code.push ..value, ', '
             code.pop!
@@ -2098,7 +2094,7 @@ class exports.Fun extends Node
                     unaries.push vr
                     vr.=it
                 v = Var delete (vr.it || vr)name || vr.var-name! || scope.temporary \arg
-                v.add-type that if vr.type-ascription
+                v.add-type that if vr.delete-type!
                 assigns.push Assign vr, switch
                     | df        => Binary p.op, v, p.second
                     | has-unary => fold ((x, y) -> y.it = x; y), v, unaries.reverse!
@@ -2106,13 +2102,21 @@ class exports.Fun extends Node
                 vr = v
             else if df
                 assigns.push Assign vr, p.second, \=, p.op, true
-            names.push (scope.add vr.value, \arg, p), ...(if vr.type-ascription then [': ', that.compile o with type-o] else []), ', '
+            names.push (scope.add vr.value, \arg, p), ...(if vr.delete-type! then [': ', that.compile o with type-o] else []), ', '
         if rest
             while splace-- then rest.unshift Arr!
             assigns.push Assign Arr(rest), Literal \arguments
         @body.prepend ...assigns if assigns.length
         names.pop!
         sn(null, ...names)
+
+    delete-type: -> delete @type-ascription or do
+        any-ascriptions = false
+        type-ascription = Fun!
+        for param in @params
+            type-ascription.params.push (if param.delete-type! then any-ascriptions = true; that else Var \any)
+        type-ascription.body = Block (if @body.delete-type! then any-ascriptions = true; that else Var \any)
+        type-ascription if any-ascriptions
 
 #### Class
 class exports.Class extends Node

@@ -652,7 +652,7 @@ exports <<<
             return 1 if @dotcat val
             tag = 'UNARY'
         case '::'
-            if @last.spaced
+            if @last.spaced or @last.0 in <[ DEDENT INDENT NEWLINE ]>
                 tag = 'ASCR'
             else
                 @adi!
@@ -1115,7 +1115,7 @@ character = if not JSON? then uxxxx else ->
         case 'CATCH'          then t is 'TRY'
         case 'FINALLY'        then t in <[ TRY CATCH THEN ]>
         case 'CASE' 'DEFAULT' then t in <[ CASE THEN ]>
-        case 'ASCR'           then not t or t is '->'
+        case 'ASCR'           then not t or (t is '->' and tokens[i-2]0 is not '->')
     !function go [] i
         prev = tokens[i-1]
         tokens.splice if prev.0 is ',' then i-1 else i, 0, dedent <<< {prev.2, prev.3}
